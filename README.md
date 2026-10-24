@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # PennyLens — Firebase version
 
 A React + Vite financial visibility dashboard with Firebase Authentication and Cloud Firestore.
@@ -61,3 +62,7 @@ npm run build
 ```
 
 For Vercel, set the six `VITE_FIREBASE_*` environment variables in the project settings and redeploy.
+=======
+# PennyLence
+Personal finance dashboard for tracking transactions and understanding spending patterns.
+>>>>>>> be95f12250332a48e5a6032dda4caa6da9a46185

@@ -49,7 +49,7 @@ const demo = [
 
 const nav = [
   ["Overview", LayoutDashboard], ["Transactions", CreditCard],
-  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles]
+  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles], ["AI Assistant", Sparkles]
 ];
 
 function AuthScreen({ onDemo, onSignedIn }) {
@@ -137,6 +137,83 @@ function addFrequency(dateText, frequency) {
     date.setDate(Math.min(day, lastDay));
   }
   return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+}
+
+
+function AIAssistantPage({transactions,bills,monthlyIncome,demoMode}) {
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState([
+    {role:"assistant", text:"Hi! I'm PennyLens AI. Ask me about your spending patterns, budget, recurring bills, or ways to save. I'll base financial answers on the data available in this workspace."}
+  ]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function sendMessage(e) {
+    e?.preventDefault?.();
+    const message = question.trim();
+    if (!message || sending) return;
+    setQuestion("");
+    setError("");
+    setMessages(old => [...old, {role:"user", text:message}]);
+    setSending(true);
+    try {
+      // Only send the financial fields needed for the answer; never send the Firebase user or API key.
+      const context = {
+        mode: demoMode ? "demo sample data" : "user workspace",
+        monthlyIncome: Number(monthlyIncome || 0),
+        transactions: transactions.slice(0, 300).map(t => ({
+          date:t.date, description:t.description, amount:Number(t.amount || 0),
+          type:t.type, category:t.category, account:t.account
+        })),
+        recurringBills: bills.map(b => ({
+          name:b.name, amount:Number(b.amount || 0), frequency:b.frequency,
+          nextDueDate:b.nextDueDate, category:b.category, active:b.active !== false
+        }))
+      };
+      const response = await fetch("/api/assistant", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({message, context})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      setMessages(old => [...old, {role:"assistant", text:data.reply || "I couldn't generate a response. Please try again."}]);
+    } catch (err) {
+      setError(err.message || "Couldn't reach PennyLens AI. Check that the backend terminal is running.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const suggestions = [
+    "Summarize my spending this month",
+    "Which categories cost me the most?",
+    "How can I reduce my expenses?",
+    "What upcoming bills should I plan for?"
+  ];
+
+  return <>
+    <PageHeader eyebrow="YOUR FINANCIAL COPILOT" title="PennyLens AI Assistant" description="Ask questions about the transactions and bills available in your workspace."/>
+    <section className="panel" style={{maxWidth:900, margin:"0 auto"}}>
+      <div className="panel-head">
+        <div><h3><Sparkles size={17} style={{verticalAlign:"middle", marginRight:8}}/>Chat with PennyLens AI</h3><p>{demoMode ? "Using sample demo data" : "Using your workspace data"} · Responses may make mistakes; verify important decisions.</p></div>
+      </div>
+      <div aria-live="polite" style={{display:"flex", flexDirection:"column", gap:14, padding:"8px 0 18px", maxHeight:460, overflowY:"auto"}}>
+        {messages.map((item,index)=><div key={`${item.role}-${index}`} style={{alignSelf:item.role==="user"?"flex-end":"stretch", maxWidth:item.role==="user"?"85%":"100%", padding:"12px 14px", borderRadius:12, background:item.role==="user"?"#eef0ff":"#f6f8fb", whiteSpace:"pre-wrap", lineHeight:1.55}}>
+          <strong style={{display:"block", fontSize:12, marginBottom:5, color:item.role==="user"?"#5865c7":"#637087"}}>{item.role==="user"?"YOU":"PENNYLENS AI"}</strong>
+          {item.text}
+        </div>)}
+        {sending && <div className="muted" role="status">PennyLens AI is thinking…</div>}
+      </div>
+      {messages.length===1 && <div style={{display:"flex", flexWrap:"wrap", gap:8, marginBottom:16}}>{suggestions.map(s=><button type="button" className="secondary" key={s} onClick={()=>setQuestion(s)}>{s}</button>)}</div>}
+      {error && <div className="notice error" role="alert">{error}</div>}
+      <form onSubmit={sendMessage} style={{display:"flex", gap:10, alignItems:"stretch"}}>
+        <input aria-label="Ask PennyLens AI" value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Ask about your spending…" maxLength={2000} disabled={sending} style={{flex:1, minWidth:0}}/>
+        <button className="primary" type="submit" disabled={sending || !question.trim()}><Sparkles size={16}/> {sending?"Thinking…":"Ask AI"}</button>
+      </form>
+      <p className="tiny muted" style={{marginTop:12}}>Privacy: the financial context shown above is sent to Google's Gemini API to generate a reply. Avoid asking about or entering passwords, API keys, or other secrets. AI responses are informational, not professional financial advice.</p>
+    </section>
+  </>;
 }
 
 function AppShell({ user, demoMode, onSignOut }) {
@@ -413,6 +490,7 @@ Save this expense anyway?`);
         {page==="Transactions"&&<TransactionsPage rows={filtered} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={()=>setModal({kind:"add"})} onEdit={t=>setModal({kind:"edit",transaction:t})} onDelete={deleteTransaction} onImport={importFile}/>}
         {page==="Recurring expenses"&&<RecurringPage recurring={recurring} bills={bills} monthlyIncome={monthlyIncome} setMonthlyIncome={setMonthlyIncome} incomeSaved={incomeSaved} onSaveIncome={saveIncome} billForm={billForm} setBillForm={setBillForm} editingBillId={editingBillId} setEditingBillId={setEditingBillId} onSaveBill={saveBill} onDeleteBill={removeBill} onMarkPaid={markBillPaid} demoMode={demoMode}/>}
         {page==="Discoveries"&&<DiscoveriesPage anomalies={anomalies} insights={insights} onDismiss={id=>setDismissed(old=>[...old,id])} onTransactions={()=>setPage("Transactions")}/>}
+        {page==="AI Assistant"&&<AIAssistantPage transactions={transactions} bills={bills} monthlyIncome={monthlyIncome} demoMode={demoMode}/>}
         <footer className="footer"><span>© 2026 PennyLens</span><span><ShieldCheck size={13}/> Insights are estimates, not financial advice.</span></footer>
       </div>
     </main>

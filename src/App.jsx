@@ -240,7 +240,7 @@ function AppShell({ user, demoMode, onSignOut }) {
     const dueDate = bill.nextDueDate || today();
     const transactionId = `bill_${bill.id}_${dueDate}`;
     const transactionData = {date:today(), description:`${bill.name} (recurring bill)`, amount:Number(bill.amount), type:"expense", category:bill.category||"Other", account:"Personal account", notes:`Recurring bill due ${dueDate}`, user_id:user?.uid, recurringBillId:bill.id, recurringBillDueDate:dueDate, updatedAt:serverTimestamp(), createdAt:serverTimestamp()};
-    try {
+   try {
       if (demoMode) {
         if (transactions.some(t=>t.id===transactionId)) { setNotice("This bill occurrence is already recorded as paid."); return; }
         const nextDueDate=addFrequency(dueDate,bill.frequency);
@@ -251,17 +251,27 @@ function AppShell({ user, demoMode, onSignOut }) {
         const transactionRef=doc(db,"transactions",transactionId);
         const occurrenceRef=doc(db,"users",user.uid,"recurringBills",bill.id,"occurrences",dueDate);
         await runTransaction(db, async tx=>{
-          const billSnap=await tx.get(billRef);
-          const existing=await tx.get(transactionRef);
-          const occurrenceSnap=await tx.get(occurrenceRef);
-          if (existing.exists() || (occurrenceSnap.exists() && occurrenceSnap.data().status==="paid")) throw new Error("This bill occurrence has already been recorded as paid.");
-          if (!billSnap.exists()) throw new Error("This recurring bill no longer exists.");
+          const billSnap = await tx.get(billRef);
+           const occurrenceSnap = await tx.get(occurrenceRef);
+
+           if (occurrenceSnap.exists() && occurrenceSnap.data().status === "paid") {
+            throw new Error("This bill occurrence has already been recorded as paid.");
+            }
+           if (!billSnap.exists()) throw new Error("This recurring bill no longer exists.");
           const current=billSnap.data();
           const currentDue=current.nextDueDate || dueDate;
           if (currentDue!==dueDate) throw new Error("This bill's due date changed. Refresh and try again.");
           const nextDueDate=addFrequency(dueDate,current.frequency);
           const nextOccurrenceRef=doc(db,"users",user.uid,"recurringBills",bill.id,"occurrences",nextDueDate);
-          tx.set(transactionRef,{...transactionData, user_id:user.uid, recurringBillDueDate:dueDate});
+          
+          tx.set(transactionRef, {
+            ...transactionData,
+            user_id: user.uid,
+            recurringBillDueDate: dueDate,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+
           tx.set(occurrenceRef,{dueDate,status:"paid",amount:Number(current.amount),paidAt:serverTimestamp(),transactionId},{merge:true});
           tx.set(nextOccurrenceRef,{dueDate:nextDueDate,status:"unpaid",amount:Number(current.amount),createdAt:serverTimestamp()},{merge:true});
           tx.update(billRef,{nextDueDate,updatedAt:serverTimestamp()});

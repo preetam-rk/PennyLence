@@ -114,9 +114,16 @@ export function detectAnomalies(transactions) {
       x.id !== t.id && x.category === t.category &&
       x.date < t.date && Math.abs((Date.parse(t.date) - Date.parse(x.date)) / 86400000) <= 120
     ).map(x => Number(x.amount)).sort((a, b) => a - b);
-    if (history.length < 3) return;
-    const median = history[Math.floor(history.length / 2)];
-    const threshold = Math.max(1000, median * 3);
+         
+if (history.length < 2) return;
+
+const mid = Math.floor(history.length / 2);
+   const median = history.length % 2 === 0
+   ? (history[mid - 1] + history[mid]) / 2
+   : history[mid];
+
+   const threshold = Math.max(1000, median * 2);
+
     if (Number(t.amount) > threshold) {
       alerts.push({
         id: t.id, transaction: t,

@@ -4,13 +4,14 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Check,
   ChevronDown, CircleHelp, CreditCard, FileUp, LayoutDashboard, Lightbulb,
   LogOut, Menu, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Trash2,
-  Upload, Wallet, X
+  Upload, Wallet, X, LineChart
 } from "lucide-react";
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis
 } from "recharts";
 import { auth, db, hasFirebase } from "./lib/firebase.js";
+import StocksPage from "./StocksPage.jsx";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDoc, setDoc, runTransaction } from "firebase/firestore";
 import {
@@ -49,7 +50,7 @@ const demo = [
 
 const nav = [
   ["Overview", LayoutDashboard], ["Transactions", CreditCard],
-  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles], ["AI Assistant", Sparkles]
+  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles], ["AI Assistant", Sparkles],["Stocks", LineChart]
 ];
 
 function AuthScreen({ onDemo, onSignedIn }) {
@@ -491,6 +492,7 @@ Save this expense anyway?`);
         {page==="Recurring expenses"&&<RecurringPage recurring={recurring} bills={bills} monthlyIncome={monthlyIncome} setMonthlyIncome={setMonthlyIncome} incomeSaved={incomeSaved} onSaveIncome={saveIncome} billForm={billForm} setBillForm={setBillForm} editingBillId={editingBillId} setEditingBillId={setEditingBillId} onSaveBill={saveBill} onDeleteBill={removeBill} onMarkPaid={markBillPaid} demoMode={demoMode}/>}
         {page==="Discoveries"&&<DiscoveriesPage anomalies={anomalies} insights={insights} onDismiss={id=>setDismissed(old=>[...old,id])} onTransactions={()=>setPage("Transactions")}/>}
         {page==="AI Assistant"&&<AIAssistantPage transactions={transactions} bills={bills} monthlyIncome={monthlyIncome} demoMode={demoMode}/>}
+        {page==="Stocks"&&<StocksPage transactions={transactions} monthlyIncome={monthlyIncome}/>}
         <footer className="footer"><span>© 2026 PennyLens</span><span><ShieldCheck size={13}/> Insights are estimates, not financial advice.</span></footer>
       </div>
     </main>

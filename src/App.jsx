@@ -4,15 +4,16 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Check,
   ChevronDown, CircleHelp, CreditCard, FileUp, LayoutDashboard, Lightbulb,
   LogOut, Menu, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Trash2,
-  Upload, Wallet, X
+  Upload, Wallet, X, LineChart
 } from "lucide-react";
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis
 } from "recharts";
 import { auth, db, hasFirebase } from "./lib/firebase.js";
+import StocksPage from "./StocksPage.jsx";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore";
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDoc, setDoc, runTransaction } from "firebase/firestore";
 import {
   buildInsights, calculateSummary, CATEGORIES, categoryTotals,
   detectAnomalies, detectRecurring, normalizeTransaction, compareMonthlySpending
@@ -49,7 +50,7 @@ const demo = [
 
 const nav = [
   ["Overview", LayoutDashboard], ["Transactions", CreditCard],
-  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles]
+  ["Recurring expenses", RefreshCw], ["Discoveries", Sparkles], ["AI Assistant", Sparkles],["Stocks", LineChart]
 ];
 
 function AuthScreen({ onDemo, onSignedIn }) {
@@ -126,6 +127,96 @@ function TransactionModal({ initial, onClose, onSave }) {
   </div></div>;
 }
 
+function addFrequency(dateText, frequency) {
+  const date = new Date(`${dateText}T12:00:00`);
+  if (frequency === "Weekly") date.setDate(date.getDate() + 7);
+  else if (frequency === "Yearly") date.setFullYear(date.getFullYear() + 1);
+  else {
+    const day = date.getDate();
+    date.setMonth(date.getMonth() + 1, 1);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(day, lastDay));
+  }
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+}
+
+
+function AIAssistantPage({transactions,bills,monthlyIncome,demoMode}) {
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState([
+    {role:"assistant", text:"Hi! I'm PennyLens AI. Ask me about your spending patterns, budget, recurring bills, or ways to save. I'll base financial answers on the data available in this workspace."}
+  ]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function sendMessage(e) {
+    e?.preventDefault?.();
+    const message = question.trim();
+    if (!message || sending) return;
+    setQuestion("");
+    setError("");
+    setMessages(old => [...old, {role:"user", text:message}]);
+    setSending(true);
+    try {
+      // Only send the financial fields needed for the answer; never send the Firebase user or API key.
+      const context = {
+        mode: demoMode ? "demo sample data" : "user workspace",
+        monthlyIncome: Number(monthlyIncome || 0),
+        transactions: transactions.slice(0, 300).map(t => ({
+          date:t.date, description:t.description, amount:Number(t.amount || 0),
+          type:t.type, category:t.category, account:t.account
+        })),
+        recurringBills: bills.map(b => ({
+          name:b.name, amount:Number(b.amount || 0), frequency:b.frequency,
+          nextDueDate:b.nextDueDate, category:b.category, active:b.active !== false
+        }))
+      };
+      const response = await fetch("/api/assistant", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({message, context})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      setMessages(old => [...old, {role:"assistant", text:data.reply || "I couldn't generate a response. Please try again."}]);
+    } catch (err) {
+      setError(err.message || "Couldn't reach PennyLens AI. Check that the backend terminal is running.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const suggestions = [
+    "Summarize my spending this month",
+    "Which categories cost me the most?",
+    "How can I reduce my expenses?",
+    "What upcoming bills should I plan for?"
+  ];
+
+  return <>
+    <PageHeader eyebrow="YOUR FINANCIAL COPILOT" title="PennyLens AI Assistant" description="Ask questions about the transactions and bills available in your workspace."/>
+    <section className="panel" style={{maxWidth:900, margin:"0 auto"}}>
+      <div className="panel-head">
+        <div><h3><Sparkles size={17} style={{verticalAlign:"middle", marginRight:8}}/>Chat with PennyLens AI</h3><p>{demoMode ? "Using sample demo data" : "Using your workspace data"} · Responses may make mistakes; verify important decisions.</p></div>
+      </div>
+      <div aria-live="polite" style={{display:"flex", flexDirection:"column", gap:14, padding:"8px 0 18px", maxHeight:460, overflowY:"auto"}}>
+        {messages.map((item,index)=><div key={`${item.role}-${index}`} style={{alignSelf:item.role==="user"?"flex-end":"stretch", maxWidth:item.role==="user"?"85%":"100%", padding:"12px 14px", borderRadius:12, background:item.role==="user"?"#eef0ff":"#f6f8fb", whiteSpace:"pre-wrap", lineHeight:1.55}}>
+          <strong style={{display:"block", fontSize:12, marginBottom:5, color:item.role==="user"?"#5865c7":"#637087"}}>{item.role==="user"?"YOU":"PENNYLENS AI"}</strong>
+          {item.text}
+        </div>)}
+        {sending && <div className="muted" role="status">PennyLens AI is thinking…</div>}
+      </div>
+      {messages.length===1 && <div style={{display:"flex", flexWrap:"wrap", gap:8, marginBottom:16}}>{suggestions.map(s=><button type="button" className="secondary" key={s} onClick={()=>setQuestion(s)}>{s}</button>)}</div>}
+      {error && <div className="notice error" role="alert">{error}</div>}
+      <form onSubmit={sendMessage} style={{display:"flex", gap:10, alignItems:"stretch"}}>
+        <input aria-label="Ask PennyLens AI" value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Ask about your spending…" maxLength={2000} disabled={sending} style={{flex:1, minWidth:0}}/>
+        <button className="primary" type="submit" disabled={sending || !question.trim()}><Sparkles size={16}/> {sending?"Thinking…":"Ask AI"}</button>
+      </form>
+      <p className="tiny muted" style={{marginTop:12}}>Privacy: the financial context shown above is sent to Google's Gemini API to generate a reply. Avoid asking about or entering passwords, API keys, or other secrets. AI responses are informational, not professional financial advice.</p>
+    </section>
+  </>;
+}
+
 function AppShell({ user, demoMode, onSignOut }) {
   const [transactions, setTransactions] = useState([]);
   const [page, setPage] = useState("Overview");
@@ -138,6 +229,12 @@ function AppShell({ user, demoMode, onSignOut }) {
   const [mobileNav, setMobileNav] = useState(false);
   const [dismissed, setDismissed] = useState([]);
   const [period, setPeriod] = useState("all");
+  const [monthlyIncome, setMonthlyIncome] = useState("");
+  const [incomeSaved, setIncomeSaved] = useState(false);
+  const [bills, setBills] = useState([]);
+  const [billForm, setBillForm] = useState({name:"", amount:"", frequency:"Monthly", nextDueDate:today(), category:"Rent/EMI"});
+  const [editingBillId, setEditingBillId] = useState(null);
+  const [setupLoaded, setSetupLoaded] = useState(false);
 
   async function load() {
     if (demoMode) { setTransactions(demo); return; }
@@ -154,8 +251,145 @@ function AppShell({ user, demoMode, onSignOut }) {
   }
   useEffect(()=>{ load(); }, [user?.uid, demoMode]);
 
+  async function loadBillSetup() {
+    if (demoMode) { setSetupLoaded(true); return; }
+    if (!user || !db) return;
+    try {
+      const profileRef = doc(db, "users", user.uid, "settings", "profile");
+      const profileSnap = await getDoc(profileRef);
+      if (profileSnap.exists()) {
+        const profile = profileSnap.data();
+        setMonthlyIncome(profile.monthlyIncome == null ? "" : String(profile.monthlyIncome));
+        setIncomeSaved(true);
+      } else {
+        setMonthlyIncome(""); setIncomeSaved(false); setPage("Recurring expenses");
+      }
+      const billSnap = await getDocs(collection(db, "users", user.uid, "recurringBills"));
+      setBills(billSnap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.nextDueDate||"").localeCompare(b.nextDueDate||"")));
+    } catch (error) { setNotice(`Could not load recurring bills: ${error.message}`); }
+    finally { setSetupLoaded(true); }
+  }
+  useEffect(()=>{ loadBillSetup(); }, [user?.uid, demoMode]);
+
+  async function saveIncome(e) {
+    e?.preventDefault?.();
+    const value = Number(monthlyIncome);
+    if (!Number.isFinite(value) || value <= 0) { setNotice("Enter a monthly income greater than ₹0."); return; }
+    if (demoMode) { setIncomeSaved(true); setNotice("Income saved for this demo session only."); return; }
+    try {
+      await setDoc(doc(db, "users", user.uid, "settings", "profile"), {monthlyIncome:value, updatedAt:serverTimestamp()}, {merge:true});
+      setIncomeSaved(true); setNotice("Monthly income saved.");
+    } catch (error) { setNotice(`Could not save income: ${error.message}`); }
+  }
+
+  async function saveBill(e) {
+    e.preventDefault();
+    const name = billForm.name.trim(), amount = Number(billForm.amount);
+    if (!name || !Number.isFinite(amount) || amount <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(billForm.nextDueDate)) { setNotice("Enter a bill name, a valid amount, and its next due date."); return; }
+    const data = {name, amount, frequency:billForm.frequency, nextDueDate:billForm.nextDueDate, category:billForm.category || "Other", active:true, updatedAt:serverTimestamp()};
+    try {
+      if (demoMode) {
+        setBills(old=>editingBillId?old.map(b=>b.id===editingBillId?{...b,...data,updatedAt:undefined}:b):[...old,{...data,id:crypto.randomUUID()}]);
+      } else if (user && db) {
+        if (editingBillId) {
+          await updateDoc(doc(db,"users",user.uid,"recurringBills",editingBillId),data);
+          await setDoc(doc(db,"users",user.uid,"recurringBills",editingBillId,"occurrences",billForm.nextDueDate),{dueDate:billForm.nextDueDate,status:"unpaid",amount,updatedAt:serverTimestamp()},{merge:true});
+        } else {
+          const billRef=await addDoc(collection(db,"users",user.uid,"recurringBills"),{...data,createdAt:serverTimestamp()});
+          await setDoc(doc(db,"users",user.uid,"recurringBills",billRef.id,"occurrences",billForm.nextDueDate),{dueDate:billForm.nextDueDate,status:"unpaid",amount,createdAt:serverTimestamp()});
+        }
+        await loadBillSetup();
+      }
+      if (demoMode) setBills(old=>old.map(b=>({...b,updatedAt:undefined})));
+      setBillForm({name:"",amount:"",frequency:"Monthly",nextDueDate:today(),category:"Rent/EMI"}); setEditingBillId(null); setNotice("Recurring bill saved.");
+    } catch (error) { setNotice(`Could not save bill: ${error.message}`); }
+  }
+
+  async function removeBill(id) {
+    if (!confirm("Delete this recurring bill? Existing transactions will be kept.")) return;
+    try {
+      if (demoMode) setBills(old=>old.filter(b=>b.id!==id));
+      else await deleteDoc(doc(db,"users",user.uid,"recurringBills",id));
+      setBills(old=>old.filter(b=>b.id!==id)); setNotice("Recurring bill deleted. Historical transactions were kept.");
+    } catch (error) { setNotice(`Could not delete bill: ${error.message}`); }
+  }
+
+  async function markBillPaid(bill) {
+    const dueDate = bill.nextDueDate || today();
+    const transactionId = `bill_${bill.id}_${dueDate}`;
+    const transactionData = {date:today(), description:`${bill.name} (recurring bill)`, amount:Number(bill.amount), type:"expense", category:bill.category||"Other", account:"Personal account", notes:`Recurring bill due ${dueDate}`, user_id:user?.uid, recurringBillId:bill.id, recurringBillDueDate:dueDate, updatedAt:serverTimestamp(), createdAt:serverTimestamp()};
+   try {
+      if (demoMode) {
+        if (transactions.some(t=>t.id===transactionId)) { setNotice("This bill occurrence is already recorded as paid."); return; }
+        const nextDueDate=addFrequency(dueDate,bill.frequency);
+        setTransactions(old=>[{...transactionData,id:transactionId},...old]);
+        setBills(old=>old.map(b=>b.id===bill.id?{...b,nextDueDate}:b));
+      } else {
+        const billRef=doc(db,"users",user.uid,"recurringBills",bill.id);
+        const transactionRef=doc(db,"transactions",transactionId);
+        const occurrenceRef=doc(db,"users",user.uid,"recurringBills",bill.id,"occurrences",dueDate);
+        await runTransaction(db, async tx=>{
+          const billSnap = await tx.get(billRef);
+           const occurrenceSnap = await tx.get(occurrenceRef);
+
+           if (occurrenceSnap.exists() && occurrenceSnap.data().status === "paid") {
+            throw new Error("This bill occurrence has already been recorded as paid.");
+            }
+           if (!billSnap.exists()) throw new Error("This recurring bill no longer exists.");
+          const current=billSnap.data();
+          const currentDue=current.nextDueDate || dueDate;
+          if (currentDue!==dueDate) throw new Error("This bill's due date changed. Refresh and try again.");
+          const nextDueDate=addFrequency(dueDate,current.frequency);
+          const nextOccurrenceRef=doc(db,"users",user.uid,"recurringBills",bill.id,"occurrences",nextDueDate);
+          
+          tx.set(transactionRef, {
+            ...transactionData,
+            user_id: user.uid,
+            recurringBillDueDate: dueDate,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+
+          tx.set(occurrenceRef,{dueDate,status:"paid",amount:Number(current.amount),paidAt:serverTimestamp(),transactionId},{merge:true});
+          tx.set(nextOccurrenceRef,{dueDate:nextDueDate,status:"unpaid",amount:Number(current.amount),createdAt:serverTimestamp()},{merge:true});
+          tx.update(billRef,{nextDueDate,updatedAt:serverTimestamp()});
+        });
+        setTransactions(old=>[{...transactionData,id:transactionId},...old]);
+        await loadBillSetup();
+      }
+      setNotice(`${bill.name} marked paid and one expense transaction was created.`);
+    } catch (error) { setNotice(error.message?.includes("already been recorded")?error.message:`Could not record payment: ${error.message}`); }
+  }
+
   async function saveTransaction(raw, existingId) {
     const normalized = normalizeTransaction(raw);
+
+    // Warn before saving an expense that would leave monthly income unable to cover bills.
+    if (normalized.type === "expense" && incomeSaved && Number(monthlyIncome) > 0 && !existingId) {
+      const now = new Date();
+      const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+      const monthEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-31`;
+      const expensesThisMonth = transactions
+        .filter(t => t.type === "expense" && t.date >= monthStart && t.date <= monthEnd)
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+      const unpaidBills = bills
+        .filter(b => b.active !== false && (b.nextDueDate || "") <= monthEnd)
+        .reduce((sum, b) => sum + Number(b.amount || 0), 0);
+      const projectedAfterExpense = Number(monthlyIncome) - expensesThisMonth - unpaidBills - normalized.amount;
+      if (projectedAfterExpense < 0) {
+        const proceed = confirm(`Spending warning: this expense may leave insufficient money for unpaid bills.
+
+Monthly income: ${money(monthlyIncome)}
+Expenses so far: ${money(expensesThisMonth)}
+Unpaid bills: ${money(unpaidBills)}
+New expense: ${money(normalized.amount)}
+Projected balance: ${money(projectedAfterExpense)}
+
+Save this expense anyway?`);
+        if (!proceed) return;
+      }
+    }
+
     if (demoMode) {
       setTransactions(old=>existingId ? old.map(t=>t.id===existingId?{...normalized,id:existingId}:t) : [{...normalized,id:crypto.randomUUID()},...old]);
       setNotice("Transaction saved in demo mode."); return;
@@ -223,6 +457,21 @@ function AppShell({ user, demoMode, onSignOut }) {
     const q=search.toLowerCase();
     return (t.description||"").toLowerCase().includes(q) && (filter==="all"||t.type===filter);
   }).sort((a,b)=>b.date.localeCompare(a.date)),[transactions,search,filter]);
+  const monthKey = today().slice(0,7);
+  const monthExpenses = transactions.filter(t=>t.type==="expense" && (t.date||"").slice(0,7)===monthKey).reduce((sum,t)=>sum+Number(t.amount||0),0);
+  const monthEnd = `${monthKey}-31`;
+  const unpaidBillsThisMonth = bills.filter(b=>b.active!==false && (b.nextDueDate||"") <= monthEnd).reduce((sum,b)=>sum+Number(b.amount||0),0);
+  const incomeNumber = Number(monthlyIncome||0);
+  const projectedRemaining = incomeNumber-monthExpenses-unpaidBillsThisMonth;
+  const sameDayAlerts = useMemo(()=>{
+    const groups=new Map();
+    transactions.filter(t=>t.type==="expense").forEach(t=>{
+      const key=`${t.date}|${t.category||"Uncategorized"}`;
+      if(!groups.has(key))groups.set(key,[]);
+      groups.get(key).push(t);
+    });
+    return [...groups.entries()].filter(([,items])=>items.length>=2).map(([key,items])=>({id:key,date:items[0].date,category:items[0].category||"Uncategorized",count:items.length,total:items.reduce((sum,t)=>sum+Number(t.amount||0),0)})).sort((a,b)=>b.date.localeCompare(a.date));
+  },[transactions]);
   const userName = demoMode ? "Demo explorer" : (user?.email?.split("@")[0] || "Your account");
 
   return <div className="app-layout">
@@ -238,10 +487,12 @@ function AppShell({ user, demoMode, onSignOut }) {
         {notice && <div className="notice info notice-bar"><span>{notice}</span><button className="icon-button small" onClick={()=>setNotice("")}><X size={16}/></button></div>}
         {importErrors.length>0&&<div className="notice warning"><strong>Some rows were not imported</strong><ul>{importErrors.map((e,i)=><li key={i}>{e}</li>)}</ul></div>}
         {busy&&<div className="loading-line"><span/> Working…</div>}
-        {page==="Overview"&&<Overview transactions={transactions} summary={summary} cats={cats} chartData={chartData} recurring={recurring} anomalies={anomalies} insights={insights} onGo={setPage} onAdd={()=>setModal({kind:"add"})}/>}
+        {page==="Overview"&&<Overview transactions={transactions} summary={summary} cats={cats} chartData={chartData} recurring={recurring} anomalies={anomalies} insights={insights} onGo={setPage} onAdd={()=>setModal({kind:"add"})} sameDayAlerts={sameDayAlerts} incomeNumber={incomeNumber} monthExpenses={monthExpenses} unpaidBillsThisMonth={unpaidBillsThisMonth} projectedRemaining={projectedRemaining}/>}
         {page==="Transactions"&&<TransactionsPage rows={filtered} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={()=>setModal({kind:"add"})} onEdit={t=>setModal({kind:"edit",transaction:t})} onDelete={deleteTransaction} onImport={importFile}/>}
-        {page==="Recurring expenses"&&<RecurringPage recurring={recurring}/>}
+        {page==="Recurring expenses"&&<RecurringPage recurring={recurring} bills={bills} monthlyIncome={monthlyIncome} setMonthlyIncome={setMonthlyIncome} incomeSaved={incomeSaved} onSaveIncome={saveIncome} billForm={billForm} setBillForm={setBillForm} editingBillId={editingBillId} setEditingBillId={setEditingBillId} onSaveBill={saveBill} onDeleteBill={removeBill} onMarkPaid={markBillPaid} demoMode={demoMode}/>}
         {page==="Discoveries"&&<DiscoveriesPage anomalies={anomalies} insights={insights} onDismiss={id=>setDismissed(old=>[...old,id])} onTransactions={()=>setPage("Transactions")}/>}
+        {page==="AI Assistant"&&<AIAssistantPage transactions={transactions} bills={bills} monthlyIncome={monthlyIncome} demoMode={demoMode}/>}
+        {page==="Stocks"&&<StocksPage transactions={transactions} monthlyIncome={monthlyIncome}/>}
         <footer className="footer"><span>© 2026 PennyLens</span><span><ShieldCheck size={13}/> Insights are estimates, not financial advice.</span></footer>
       </div>
     </main>
@@ -253,9 +504,13 @@ function PageHeader({eyebrow,title,description,action}) {
   return <div className="page-header"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>{action}</div>;
 }
 
-function Overview({transactions,summary,cats,chartData,recurring,anomalies,insights,onGo,onAdd}) {
+function Overview({transactions,summary,cats,chartData,recurring,anomalies,insights,onGo,onAdd,sameDayAlerts,incomeNumber,monthExpenses,unpaidBillsThisMonth,projectedRemaining}) {
   const monthlyComparison = compareMonthlySpending(transactions);
   return <><PageHeader eyebrow="YOUR FINANCIAL SNAPSHOT" title="Good money starts with clarity." description="A clear view of what came in, what went out, and what deserves a closer look." action={<button className="primary" onClick={onAdd}><Plus size={17}/> Add transaction</button>}/>
+    {(sameDayAlerts.length>0 || (incomeNumber>0 && (projectedRemaining<=0 || (projectedRemaining/incomeNumber)<=0.2))) && <section className="panel spending-risk-panel"><div className="panel-head"><div><h3><AlertTriangle size={17}/> Spending alerts</h3><p>Based on today's category activity and your saved income/bills</p></div></div>
+      {sameDayAlerts.slice(0,4).map(a=><div className="notice warning" key={a.id}><AlertTriangle size={17}/><span><strong>Repeated {a.category} spending:</strong> {a.count} transactions on {a.date}, totaling {money(a.total)}. Review whether these purchases were planned.</span></div>)}
+      {incomeNumber>0 && (projectedRemaining<=0 || (projectedRemaining/incomeNumber)<=0.2) && <div className={`notice ${projectedRemaining<=0?"error":"warning"}`}><AlertTriangle size={17}/><span><strong>{projectedRemaining<=0?"Bill commitments may exceed available income":"Low remaining budget"}.</strong> Monthly income {money(incomeNumber)}, expenses so far {money(monthExpenses)}, unpaid bills due this month {money(unpaidBillsThisMonth)}. Estimated remaining after commitments: {money(projectedRemaining)}. {projectedRemaining<=0?"Consider postponing nonessential purchases or reducing discretionary spending.":"Consider limiting optional spending until upcoming bills are paid."}</span></div>}
+    </section>}
     <div className="stat-grid">
       <StatCard title="Total income" value={money(summary.income)} note="Recorded inflows" icon={ArrowDownRight} tone="green"/>
       <StatCard title="Total expenses" value={money(summary.expenses)} note="Before refunds" icon={ArrowUpRight} tone="rose"/>
@@ -303,13 +558,21 @@ function TransactionTable({rows,onEdit,onDelete,compact=false}) {
   return <div className="table-scroll"><table><thead><tr><th>Transaction</th><th>Date</th><th>Category</th><th>Account</th><th className="right">Amount</th>{!compact&&<th className="right">Actions</th>}</tr></thead><tbody>{rows.map(t=><tr key={t.id}><td><div className="transaction-name"><span className={`merchant-icon ${t.type}`}><CreditCard size={15}/></span><span><strong>{t.description}</strong><small>{t.type==="income"?"Income":t.type==="transfer"?"Own-account transfer":t.type==="refund"?"Refund":"Expense"}</small></span></div></td><td className="date-cell">{t.date}</td><td><span className="category-chip">{t.category||"Uncategorized"}</span></td><td className="account-cell">{t.account||"—"}</td><td className={`amount-cell right ${t.type==="income"||t.type==="refund"?"positive":""}`}>{t.type==="income"?"+":t.type==="refund"?"+":t.type==="transfer"?"": "−"}{money(t.amount)}</td>{!compact&&<td><div className="row-actions"><button className="icon-button small" title="Edit transaction" onClick={()=>onEdit(t)}><span className="sr-only">Edit</span><Activity size={15}/></button><button className="icon-button small danger-hover" title="Delete transaction" onClick={()=>onDelete(t.id)}><Trash2 size={15}/></button></div></td>}</tr>)}</tbody></table></div>;
 }
 
-function RecurringPage({recurring}) {
+function RecurringPage({recurring,bills,monthlyIncome,setMonthlyIncome,incomeSaved,onSaveIncome,billForm,setBillForm,editingBillId,setEditingBillId,onSaveBill,onDeleteBill,onMarkPaid,demoMode}) {
   const monthly = recurring.reduce((s,r)=>s+r.monthlyCost,0);
-  return <><PageHeader eyebrow="REPEATING MONEY MOVEMENTS" title="Recurring expenses" description="Find likely repeated payments and understand their potential long-term cost."/>
-    <div className="stat-grid two"><StatCard title="Patterns detected" value={recurring.length} note="Requires user confirmation" icon={RefreshCw} tone="blue"/><StatCard title="Estimated monthly cost" value={money(monthly)} note={`${money(monthly*12)} annualized if continued`} icon={Wallet} tone="amber"/></div>
-    <section className="panel recurring-panel"><div className="panel-head"><div><h3>Potential recurring payments</h3><p>Based on repeated merchant names, dates and similar amounts</p></div><span className="count-pill">{recurring.length} patterns</span></div>
-      {recurring.length?<div className="recurring-list">{recurring.map(r=><div className="recurring-card" key={r.key}><div className="merchant-logo"><RefreshCw size={19}/></div><div className="recurring-info"><strong>{r.name}</strong><span>{r.frequency} · {r.occurrences} occurrences · {r.confidence} confidence</span><small>Observed dates: {r.dates.slice(-4).join(", ")}</small></div><div className="recurring-cost"><strong>{money(r.monthlyCost)}<small>/mo est.</small></strong><span>{money(r.annualCost)}/yr</span></div></div>)}</div>:<EmptyState icon={RefreshCw} title="No recurring patterns yet" text="Import at least three months of repeated payments with similar descriptions and amounts. Suggestions are not confirmed subscriptions."/ >}
-    </section><div className="notice info"><CircleHelp size={17}/><span>Repeated purchases are not necessarily subscriptions. Review each suggestion before making a financial decision.</span></div>
+  const unpaid = bills.filter(b=>b.active!==false);
+  const setField=(key,value)=>setBillForm(old=>({...old,[key]:value}));
+  function editBill(bill) { setEditingBillId(bill.id); setBillForm({name:bill.name,amount:String(bill.amount),frequency:bill.frequency||"Monthly",nextDueDate:bill.nextDueDate||today(),category:bill.category||"Other"}); window.scrollTo({top:0,behavior:"smooth"}); }
+  return <><PageHeader eyebrow="YOUR COMMITMENTS" title="Recurring bills" description="Save bills you need to pay, track each due date, and protect money for upcoming commitments."/>
+    {!incomeSaved && <section className="panel onboarding-panel"><div className="panel-head"><div><h3>Welcome — set up your budget first</h3><p>Enter your monthly income and add any recurring bills below. These are saved to your account, not inferred automatically.</p></div></div><form className="inline-income-form" onSubmit={onSaveIncome}><label>Monthly income (₹)<input type="number" min="0.01" step="0.01" value={monthlyIncome} onChange={e=>setMonthlyIncome(e.target.value)} placeholder="Enter your monthly income" required/></label><button className="primary">Save income</button></form></section>}
+    {incomeSaved && <section className="panel income-settings-panel"><div className="panel-head"><div><h3>Monthly income</h3><p>Update this whenever your income changes.</p></div><strong className="income-value">{money(monthlyIncome)}</strong></div><form className="inline-income-form" onSubmit={onSaveIncome}><label>Update monthly income (₹)<input type="number" min="0.01" step="0.01" value={monthlyIncome} onChange={e=>setMonthlyIncome(e.target.value)} required/></label><button className="secondary">Update income</button></form></section>}
+    <section className="panel recurring-panel"><div className="panel-head"><div><h3>{editingBillId?"Edit recurring bill":"Add a recurring bill"}</h3><p>Each bill occurrence starts unpaid. Mark it paid to create one linked expense transaction.</p></div></div>
+      <form className="bill-form" onSubmit={onSaveBill}><label>Bill name<input value={billForm.name} onChange={e=>setField("name",e.target.value)} placeholder="e.g. Rent, internet, EMI" required/></label><label>Amount (₹)<input type="number" min="0.01" step="0.01" value={billForm.amount} onChange={e=>setField("amount",e.target.value)} placeholder="600" required/></label><label>Frequency<select value={billForm.frequency} onChange={e=>setField("frequency",e.target.value)}><option>Weekly</option><option>Monthly</option><option>Yearly</option></select></label><label>Next due date<input type="date" value={billForm.nextDueDate} onChange={e=>setField("nextDueDate",e.target.value)} required/></label><label>Expense category<select value={billForm.category} onChange={e=>setField("category",e.target.value)}>{CATEGORIES.filter(c=>!(["Salary","Transfer","Refund"].includes(c))).map(c=><option key={c}>{c}</option>)}</select></label><div className="bill-form-actions"><button className="primary">{editingBillId?"Save changes":"Add bill"}</button>{editingBillId&&<button type="button" className="secondary" onClick={()=>{setEditingBillId(null);setBillForm({name:"",amount:"",frequency:"Monthly",nextDueDate:today(),category:"Rent/EMI"});}}>Cancel edit</button>}</div></form>
+      <div className="panel-head bills-list-head"><div><h3>Your saved bills</h3><p>Mark the current occurrence paid; the next due date will advance automatically.</p></div><span className="count-pill">{unpaid.length} active</span></div>
+      {unpaid.length ? <div className="managed-bills-list">{unpaid.map(b=><div className="managed-bill" key={b.id}><div className="merchant-logo"><RefreshCw size={18}/></div><div className="recurring-info"><strong>{b.name}</strong><span>{b.frequency} · {money(b.amount)} · {b.category}</span><small>Next due: {b.nextDueDate || "Not set"}</small></div><div className="managed-bill-actions"><button className="primary small-button" onClick={()=>onMarkPaid(b)}>Mark paid</button><button className="secondary small-button" onClick={()=>editBill(b)}>Edit</button><button className="icon-button small danger-hover" title="Delete bill" onClick={()=>onDeleteBill(b.id)}><Trash2 size={15}/></button></div></div>)}</div> : <EmptyState icon={RefreshCw} title="No saved recurring bills" text="Add your rent, utilities, subscriptions, loan payments, or other regular commitments above."/>}
+    </section>
+    <section className="panel recurring-panel"><div className="panel-head"><div><h3>Detected payment patterns</h3><p>These are inferred from transactions and are separate from bills you manage.</p></div><span className="count-pill">{recurring.length} patterns</span></div>{recurring.length?<div className="recurring-list">{recurring.map(r=><div className="recurring-card" key={r.key}><div className="merchant-logo"><RefreshCw size={19}/></div><div className="recurring-info"><strong>{r.name}</strong><span>{r.frequency} · {r.occurrences} occurrences · {r.confidence} confidence</span><small>Observed dates: {r.dates.slice(-4).join(", ")}</small></div><div className="recurring-cost"><strong>{money(r.monthlyCost)}<small>/mo est.</small></strong><span>{money(r.annualCost)}/yr</span></div></div>)}</div>:<p className="muted">Patterns appear after enough repeated transactions are available.</p>}</section>
+    <div className="notice info"><CircleHelp size={17}/><span>Marking a bill paid creates a linked expense exactly once. The payment is recorded for today, and the bill's next due date advances based on its recurrence.</span></div>
   </>;
 }
 

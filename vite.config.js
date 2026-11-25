@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base:"/PennyLence/"
+  base:"/PennyLence/",
   server: {
     host: "localhost",
     port: 5173,
